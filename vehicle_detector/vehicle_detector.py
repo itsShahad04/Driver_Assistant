@@ -89,7 +89,6 @@ def process_video(video_path, model):
         if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     cap.release()
-
 def main():
     model = YOLO('yolov8n.pt')
     video_files = ['sample1(2).mp4', 'sample2.mp4', 'sample3.mp4']
