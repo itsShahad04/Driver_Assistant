@@ -3,6 +3,16 @@ import threading
 import os
 from ultralytics import YOLO
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(script_dir, 'yolov8n.pt')
+
+# Reloading the model with the corrected path
+try:
+    model = YOLO(model_path)
+    print("Model loaded successfully!")
+except Exception as e:
+    print(f"Error loading model: {e}")
+
 is_beeping = False
 
 def play_beep():
@@ -91,7 +101,7 @@ def process_video(video_path, model):
     cap.release()
 def main():
     model = YOLO('yolov8n.pt')
-    video_files = ['sample1(2).mp4', 'sample2.mp4', 'sample3.mp4']
+    video_files = ['sample1(2).mp4', 'sample5.mp4']
     
     for v in video_files:
         process_video(v, model)
