@@ -101,7 +101,7 @@ def process_video(video_path, model):
     cap.release()
 def main():
     model = YOLO('yolov8n.pt')
-    video_files = ['sample1(2).mp4', 'sample5.mp4']
+    video_files = ['sample2.mp4', 'sample5.mp4']
     
     for v in video_files:
         process_video(v, model)
