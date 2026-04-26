@@ -1,5 +1,5 @@
 """
-Driver Assistant System — Multi-Feed Grid Dashboard
+Driver Assistant System — Sequential Feed Dashboard
 =====================================================
 Place this file in:   DRIVER_ASSISTANT/dashboard.py
 
@@ -7,18 +7,15 @@ Run from the DRIVER_ASSISTANT root folder:
     cd C:\\Users\\Manar\\Documents\\Driver_assistant
     python dashboard.py
 
-Layout (each cell is an independent video feed):
-┌─────────────────────┬─────────────────────┬──────────┐
-│  Lane Detection     │  Vehicle Detection  │          │
-│  (nD_10.mp4)        │  (nD_10.mp4)        │ SIDEBAR  │
-├─────────────────────┼─────────────────────┤          │
-│  License Plate /    │  Parking Detector   │  status  │
-│  Incident           │  (g.png snapshot)   │  panels  │
-│  (accident_video)   │                     │          │
-├─────────────────────┼─────────────────────┤          │
-│  Sign Detector      │  [summary stats]    │          │
-│  (my_video.mp4)     │                     │          │
-└─────────────────────┴─────────────────────┴──────────┘
+Features shown ONE AT A TIME in sequence:
+  1. Lane Detection       (nD_10.mp4)
+  2. Vehicle Detection   (sample5.mp4)  ← SEPARATE VIDEO
+  3. License Plate       (accident_video.mp4)
+  4. Parking             (g.png snapshot)
+  5. Sign Detection      (my_video.mp4)
+
+Each feature shows on the main feed, with sidebar status.
+Sign text persists for 3 seconds so driver can read it.
 """
 
 import cv2
@@ -28,6 +25,7 @@ import math
 import threading
 import os
 import sys
+import time
 
 # ── Root path helper ─────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +33,7 @@ def p(*parts): return os.path.join(ROOT, *parts)
 
 # ── All input paths ───────────────────────────────────────────────────────────
 PATH_LANE_VIDEO   = p("Lane_Detection",          "nD_10.mp4")
+PATH_VEH_VIDEO    = p("vehicle_detector",        "sample5.mp4")          # ← SEPARATE!
 PATH_INCIDENT_VID = p("License_Plate_Detection", "accident_video.mp4")
 PATH_PARK_MODEL   = p("Park_Detector",           "best.pt")
 PATH_PARK_IMAGE   = p("Park_Detector",           "g.png")
@@ -68,7 +67,7 @@ def beep(freq=800, dur=120):
     threading.Thread(target=_do, daemon=True).start()
 
 # ════════════════════════════════════════════════════════════════════════════
-# FEATURE PROCESSORS  (each is self-contained, owns its own state)
+# FEATURE PROCESSORS
 # ════════════════════════════════════════════════════════════════════════════
 
 class LaneDetector:
@@ -94,8 +93,8 @@ class LaneDetector:
                     self.alert = True
         if self.alert:
             self.status = "LANE ALERT"
-            cv2.putText(frame,"LANE ALERT",(w//2-90,50),
-                cv2.FONT_HERSHEY_SIMPLEX,1.1,(0,0,255),3)
+            cv2.putText(frame,"LANE ALERT",(w//2-90,80),
+                cv2.FONT_HERSHEY_SIMPLEX,1.2,(0,0,255),3)
             beep(600,30)
         else:
             self.status = "Lane OK"
@@ -142,7 +141,7 @@ class VehicleDetector:
             cv2.putText(frame,label,(x1,max(y1-5,10)),cv2.FONT_HERSHEY_SIMPLEX,.4,color,1)
         if self.danger:
             self.status = "BRAKE NOW!"
-            cv2.putText(frame,"BRAKE NOW!",(w//2-110,55),
+            cv2.putText(frame,"BRAKE NOW!",(w//2-110,80),
                 cv2.FONT_HERSHEY_DUPLEX,1.4,(0,0,255),4)
         else:
             self.status = f"{self.count} vehicle(s)"
@@ -151,8 +150,7 @@ class VehicleDetector:
 
 class IncidentLogger:
     """
-    Completely independent from the lane/vehicle feeds.
-    Tracks its own frame index against accident_video.mp4 only.
+    Tracks its own frame count against accident_video.mp4 only.
     """
     label     = "License Plate"
     status    = "Monitoring"
@@ -241,9 +239,12 @@ class ParkingDetector:
 
 
 class SignDetector:
+    """Sign detector with persistent text display (3 seconds)."""
     label  = "Sign Detector"
     status = "Inactive"
     last   = "—"
+    _text_time = 0.0      # timestamp of last detected sign
+    _persist_secs = 3.0   # keep text visible for this long
 
     def __init__(self):
         self.model = None
@@ -257,6 +258,9 @@ class SignDetector:
         res  = self.model(frame, conf=0.25, verbose=False)
         boxes= res[0].boxes
         names= self.model.names
+        h, w = frame.shape[:2]
+        now  = time.time()
+
         if boxes and len(boxes):
             for box in boxes:
                 x1,y1,x2,y2=map(int,box.xyxy[0])
@@ -264,17 +268,36 @@ class SignDetector:
                 cv2.rectangle(frame,(x1,y1),(x2,y2),(160,60,255),2)
                 cv2.putText(frame,f"{nm} {cf:.2f}",(x1,max(y1-8,10)),
                     cv2.FONT_HERSHEY_SIMPLEX,.5,(160,60,255),2)
-                self.last=nm
-            self.status=f"Sign: {self.last}"
+                self.last = nm
+                self._text_time = now          # reset persistence timer
+            self.status = f"Sign: {self.last}"
         else:
-            self.status="No sign"
+            self.status = "No sign"
+
+        # Keep text visible on screen even after detection stops
+        if now - self._text_time < self._persist_secs and self.last != "—":
+            txt = f"DETECTED: {self.last}"
+            font_scale = 0.8
+            font_thick = 2
+            (tw, th), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_DUPLEX,
+                                          font_scale, font_thick)
+            bg_x1, bg_y1 = w // 2 - tw // 2 - 10, 60
+            bg_x2, bg_y2 = w // 2 + tw // 2 + 10, 60 + th + 10
+            cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2),
+                         (20, 20, 20), -1)
+            cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2),
+                         (160, 60, 255), 2)
+            cv2.putText(frame, txt, (w // 2 - tw // 2, 60 + th),
+                       cv2.FONT_HERSHEY_DUPLEX, font_scale,
+                       (160, 60, 255), font_thick)
+
         return frame
 
 
 # ════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ════════════════════════════════════════════════════════════════════════════
-PANEL_W    = 260
+PANEL_W    = 280
 TEXT_FG    = (220,220,220)
 TEXT_DIM   = (110,110,110)
 COL_GREEN  = ( 60,220, 60)
@@ -328,26 +351,15 @@ def read_or_blank(cap, fw, fh, blank):
         cap.set(cv2.CAP_PROP_POS_FRAMES,0); ok,f=cap.read()
     return cv2.resize(f,(fw,fh)) if ok else blank.copy()
 
-def label_cell(frame, text):
-    """Dark strip with feature name at the top of each cell."""
-    cv2.rectangle(frame,(0,0),(frame.shape[1],22),(0,0,0),-1)
-    cv2.putText(frame,text,(6,15),cv2.FONT_HERSHEY_SIMPLEX,.45,(180,180,180),1)
-    return frame
-
 
 # ════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ════════════════════════════════════════════════════════════════════════════
 def main():
-    # Cell size for each of the 6 grid tiles (2 cols × 3 rows)
-    CW, CH = 400, 300          # cell width / height
-    GRID_W = CW*2              # 800
-    GRID_H = CH*3              # 900
-    DASH_W = GRID_W + PANEL_W  # 1060
-    DASH_H = GRID_H            # 900
+    FW, FH = 640, 480
 
     print("\n" + "="*60)
-    print("  Driver Assistant Grid Dashboard — initialising…")
+    print("  Driver Assistant Dashboard — sequential feeds")
     print("="*60 + "\n")
 
     # Init feature objects
@@ -356,120 +368,107 @@ def main():
     park_det  = ParkingDetector()
     sign_det  = SignDetector()
 
-    # Each feature gets its own dedicated video capture
+    # Open video captures — EACH HAS ITS OWN VIDEO
     cap_lane, fps_lane = open_cap(PATH_LANE_VIDEO)
-    cap_veh,  fps_veh  = open_cap(PATH_LANE_VIDEO)     # same road video, separate cap
-    cap_inc,  fps_inc  = open_cap(PATH_INCIDENT_VID)   # accident_video ONLY for plate
+    cap_veh,  fps_veh  = open_cap(PATH_VEH_VIDEO)       # ← SEPARATE sample5.mp4
+    cap_inc,  fps_inc  = open_cap(PATH_INCIDENT_VID)
     cap_sign, fps_sign = open_cap(PATH_SIGN_VIDEO)
 
-    # IncidentLogger tracks its own frame count against accident_video
+    # IncidentLogger tracks its own frame count
     inc_log = IncidentLogger(fps=fps_inc)
 
     # Parking: static image processed once
     print("[INFO] Running parking inference on g.png …")
-    park_frame_cached = park_det.get_frame(CW, CH)
-    print(f"       {park_det.status}")
+    park_frame_cached = park_det.get_frame(FW, FH)
+    print(f"       {park_det.status}\n")
 
-    # Shared blank tile
-    blank = np.zeros((CH, CW, 3), np.uint8)
-    cv2.putText(blank,"No source",(CW//2-55,CH//2),
+    # Shared blank
+    blank = np.zeros((FH, FW, 3), np.uint8)
+    cv2.putText(blank,"No source",(FW//2-55,FH//2),
         cv2.FONT_HERSHEY_SIMPLEX,.6,(70,70,70),1)
-
-    # Summary stats
-    total_alerts = 0
 
     WIN = "Driver Assistant System  |  Q = quit"
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WIN, DASH_W, DASH_H)
-    print(f"\n  Window size: {DASH_W}×{DASH_H}   Press Q to quit.\n")
+    cv2.resizeWindow(WIN, FW + PANEL_W, FH)
 
-    # Throttle YOLO calls to reduce lag: process every Nth frame
-    # Set to 1 to process every frame (slower), higher = faster but less frequent detections
-    YOLO_EVERY = 2
-    tick = 0
+    print(f"  Window size: {FW + PANEL_W}×{FH}")
+    print("  One feature at a time, cycling through all 5.")
+    print("  Press Q to quit.\n")
+
+    # Cycle through features — each runs through its ENTIRE video
+    features_list = [
+        ("lane",    cap_lane,    lane_det),
+        ("vehicle", cap_veh,     veh_det),
+        ("incident",cap_inc,     inc_log),
+        ("parking", None,        park_det),   # static image
+        ("sign",    cap_sign,    sign_det),
+    ]
+
+    feature_idx = 0
+    total_alerts = 0
 
     while True:
-        tick += 1
-        run_yolo = (tick % YOLO_EVERY == 0)
+        fname, cap, processor = features_list[feature_idx]
 
-        # ── Read raw frames (each cap is independent) ─────────────────────
-        raw_lane = read_or_blank(cap_lane, CW, CH, blank)
-        raw_veh  = read_or_blank(cap_veh,  CW, CH, blank)
-        raw_inc  = read_or_blank(cap_inc,  CW, CH, blank)
-        raw_sign = read_or_blank(cap_sign, CW, CH, blank)
+        # ── Handle each feature type ─────────────────────────────────────
+        if fname == "parking":
+            # Parking is static, show once then move to next
+            main_frame = park_frame_cached.copy()
+            # Process and show
+            features = [
+                ("Lane Detection",    lane_det.status,
+                 COL_RED   if lane_det.alert    else COL_GREEN),
+                ("Vehicle Detection", veh_det.status,
+                 COL_RED   if veh_det.danger    else COL_GREEN),
+                ("License Plate",     inc_log.status,
+                 COL_AMBER if inc_log.incident  else COL_GREEN),
+                ("Parking",           park_det.status,
+                 COL_RED   if park_det.empty==0 else COL_BLUE),
+                ("Sign Detector",     sign_det.status,
+                 COL_PURPLE),
+            ]
+            sidebar = make_sidebar(FH, features)
+            dashboard = np.hstack([main_frame, sidebar])
+            cv2.putText(dashboard, f"[PARKING]", (10, FH - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+            cv2.imshow(WIN, dashboard)
+            if cv2.waitKey(2000) & 0xFF == ord("q"):  # Show for 2 seconds
+                break
+            # Move to next feature
+            feature_idx = (feature_idx + 1) % len(features_list)
+            continue
 
-        # ── Process each feature on its own dedicated frame ───────────────
-        # Lane — always fast (no YOLO)
-        cell_lane = lane_det.process(raw_lane.copy())
-        label_cell(cell_lane, "Lane Detection")
+        # ── Read and process video frame ─────────────────────────────────
+        if cap is None:
+            # No video available, skip to next
+            feature_idx = (feature_idx + 1) % len(features_list)
+            continue
 
-        # Vehicle — YOLO, throttled
-        if run_yolo:
-            cell_veh = veh_det.process(raw_veh.copy())
-        else:
-            cell_veh = raw_veh.copy()
-            # Keep last known status displayed
-            if veh_det.danger:
-                cv2.putText(cell_veh,"BRAKE NOW!",(CW//2-110,55),
-                    cv2.FONT_HERSHEY_DUPLEX,1.4,(0,0,255),4)
-        label_cell(cell_veh, "Vehicle Detection")
+        ok, f = cap.read()
+        if not ok:
+            # End of video, move to next feature
+            print(f"  [DONE] {fname.upper()} video finished, moving to next…")
+            feature_idx = (feature_idx + 1) % len(features_list)
+            # Reset incident logger for next cycle
+            inc_log.reset()
+            continue
 
-        # Incident/Plate — always fast (no YOLO, just overlay)
-        cell_inc = inc_log.process(raw_inc.copy())
-        label_cell(cell_inc, "License Plate / Incident")
+        main_frame = cv2.resize(f, (FW, FH))
 
-        # Parking — static cached image, no per-frame work
-        cell_park = park_frame_cached.copy()
-        label_cell(cell_park, f"Parking  [{park_det.status}]")
+        # Process frame based on feature type
+        if fname == "lane":
+            main_frame = lane_det.process(main_frame)
+            if lane_det.alert: total_alerts += 1
+        elif fname == "vehicle":
+            main_frame = veh_det.process(main_frame)
+            if veh_det.danger: total_alerts += 1
+        elif fname == "incident":
+            main_frame = inc_log.process(main_frame)
+            if inc_log.incident: total_alerts += 1
+        elif fname == "sign":
+            main_frame = sign_det.process(main_frame)
 
-        # Sign — YOLO, throttled
-        if run_yolo:
-            cell_sign = sign_det.process(raw_sign.copy())
-        else:
-            cell_sign = raw_sign.copy()
-        label_cell(cell_sign, "Sign Detector")
-
-        # ── Summary tile (bottom-right cell) ─────────────────────────────
-        cell_info = np.zeros((CH, CW, 3), np.uint8); cell_info[:] = (16,16,16)
-        if lane_det.alert or veh_det.danger or inc_log.incident:
-            total_alerts += 1
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-
-        lines_info = [
-            ("DRIVER ASSISTANT",    (180,180,180), .55, 1),
-            (now,                   (100,100,100), .42, 1),
-            ("",None,0,0),
-            (f"Lane:     {lane_det.status}",
-             (60,60,255) if lane_det.alert else (60,220,60), .46, 1),
-            (f"Vehicle:  {veh_det.status}",
-             (60,60,255) if veh_det.danger else (60,220,60), .46, 1),
-            (f"Plate:    {inc_log.status}",
-             (30,165,255) if inc_log.incident else (60,220,60), .46, 1),
-            (f"Parking:  {park_det.status}",
-             (255,165,30), .46, 1),
-            (f"Sign:     {sign_det.status}",
-             (220,100,220), .46, 1),
-            ("",None,0,0),
-            (f"Alerts fired: {total_alerts}",
-             (60,60,255) if total_alerts>0 else (60,220,60), .46, 1),
-            ("","",0,0),
-            ("Press Q to quit", (60,60,60), .38, 1),
-        ]
-        y=30
-        for txt, col, scale, thick in lines_info:
-            if txt and col:
-                cv2.putText(cell_info, txt, (12,y),
-                    cv2.FONT_HERSHEY_SIMPLEX, scale, col, thick)
-            y += 26 if txt else 10
-        label_cell(cell_info, "System Summary")
-
-        # ── Assemble 2×3 grid ─────────────────────────────────────────────
-        row0 = np.hstack([cell_lane, cell_veh])
-        row1 = np.hstack([cell_inc,  cell_park])
-        row2 = np.hstack([cell_sign, cell_info])
-        grid = np.vstack([row0, row1, row2])
-
-        # ── Sidebar ───────────────────────────────────────────────────────
+        # ── Build sidebar ────────────────────────────────────────────────
         features = [
             ("Lane Detection",    lane_det.status,
              COL_RED   if lane_det.alert    else COL_GREEN),
@@ -482,22 +481,25 @@ def main():
             ("Sign Detector",     sign_det.status,
              COL_PURPLE),
         ]
-        sidebar = make_sidebar(DASH_H, features)
+        sidebar = make_sidebar(FH, features)
 
-        # ── Final composite ───────────────────────────────────────────────
-        dashboard = np.hstack([grid, sidebar])
+        # ── Composite ────────────────────────────────────────────────────
+        dashboard = np.hstack([main_frame, sidebar])
+
+        # ── Feature indicator in corner ──────────────────────────────────
+        feature_label = fname.upper()
+        cv2.putText(dashboard, f"[{feature_label}]", (10, FH - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+
         cv2.imshow(WIN, dashboard)
 
-        # Adaptive wait: faster when danger detected
-        wait = 1 if (veh_det.danger or lane_det.alert) else 20
-        if cv2.waitKey(wait) & 0xFF == ord("q"):
+        if cv2.waitKey(20) & 0xFF == ord("q"):
             break
 
     for cap in [cap_lane, cap_veh, cap_inc, cap_sign]:
         if cap: cap.release()
     cv2.destroyAllWindows()
-    print("Dashboard closed.")
+    print("\nDashboard closed.")
 
 if __name__ == "__main__":
     main()
-    
